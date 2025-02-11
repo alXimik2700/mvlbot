@@ -1,0 +1,227 @@
+from dotenv import load_dotenv
+import os
+import logging
+import time
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
+import aiohttp
+import asyncio
+
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# Загрузка переменных окружения
+dotenv_path = os.path.join(os.getcwd(), ".env")
+if not os.path.exists(dotenv_path):
+    logger.error(f"Файл .env не найден по пути: {dotenv_path}")
+    exit(1)
+else:
+    logger.info(f"Файл .env найден: {dotenv_path}")
+    load_dotenv(dotenv_path)
+
+# Логирование переменных окружения
+logger.info("Переменные окружения:")
+for key in ["TELEGRAM_BOT_TOKEN", "CACHE_TIME"]:
+    value = os.getenv(key)
+    if value:
+        logger.info(f"{key}: {'*' * len(value) if key == 'TELEGRAM_BOT_TOKEN' else value}")
+    else:
+        logger.warning(f"{key} не установлена.")
+
+# Получение токена и времени кэширования
+token = os.getenv("TELEGRAM_BOT_TOKEN")
+if not token:
+    logger.error("Токен бота не настроен. Установите переменную окружения TELEGRAM_BOT_TOKEN.")
+    exit(1)
+
+cache_time_env = os.getenv("CACHE_TIME")
+try:
+    CACHE_TIME = int(cache_time_env) if cache_time_env else 3600  # По умолчанию 1 час
+except ValueError:
+    logger.error("Неверное значение для CACHE_TIME. Используется значение по умолчанию: 3600 секунд.")
+    CACHE_TIME = 3600
+
+cached_rate = None
+last_update_time = 0
+
+# Функция для получения курса доллара к рублю
+async def get_usd_to_rub_rate(force_update=False):
+    global cached_rate, last_update_time
+    current_time = time.time()
+
+    if not force_update and cached_rate is not None and (current_time - last_update_time < CACHE_TIME):
+        logger.info("Используется закэшированный курс.")
+        return cached_rate
+
+    url = "https://api.exchangerate-api.com/v4/latest/USD"
+    message = "Не удалось получить курс доллара."
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    logger.error(f"Ошибка при запросе к API ({url}): {response.status}")
+                    message = f"Ошибка при получении курса: {response.status}"
+                    return None
+
+                data = await response.json()
+                usd_rate = data['rates']['RUB']
+                cached_rate = usd_rate
+                last_update_time = current_time
+                logger.info(f"Курс доллара обновлен: {usd_rate:.2f} RUB")
+                return usd_rate
+    except aiohttp.ClientConnectionError as e:
+        logger.error(f"Проблемы с подключением к API ({url}): {e}")
+        message = f"Проблемы с подключением к серверу."
+        return None
+    except Exception as e:
+        logger.error(f"Ошибка при запросе к API ({url}): {e}")
+        message = f"Произошла ошибка: {e}"
+        return None
+    finally:
+        if "Не удалось" in message:
+            logger.warning(message)
+
+# Создание выпадающего меню с кнопками
+def create_further_actions_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("Получить курс еще раз", callback_data="rate")],
+        [InlineKeyboardButton("🔴 Конвертировать доллары в рубли", callback_data="calc")],  # Красный эмодзи
+        [InlineKeyboardButton("🟢 Конвертировать рубли в доллары", callback_data="rub_to_usd")],  # Зеленый эмодзи
+        [InlineKeyboardButton("Вернуться в главное меню", callback_data="start")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+# Команда /start с кнопками
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info(f"Пользователь {update.effective_user.id} ({update.effective_user.username}) вызвал команду /start")
+
+    keyboard = [
+        [InlineKeyboardButton("Получить курс доллара", callback_data="rate")],
+        [InlineKeyboardButton("🔴 Конвертировать доллары в рубли", callback_data="calc")],  # Красный эмодзи
+        [InlineKeyboardButton("🟢 Конвертировать рубли в доллары", callback_data="rub_to_usd")]  # Зеленый эмодзи
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(
+        "<b>Привет!</b> Я бот для работы с валютой.\nВыберите действие:",
+        parse_mode="HTML",
+        reply_markup=reply_markup
+    )
+
+# Обработка нажатий на кнопки
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()  # Подтверждаем получение нажатия
+
+    if query.data == "rate":
+        logger.info(f"Пользователь {query.from_user.id} ({query.from_user.username}) выбрал 'Получить курс доллара'")
+        usd_rate = await get_usd_to_rub_rate()
+        if usd_rate is not None:
+            message = f"Текущий курс доллара к рублю: {usd_rate:.2f} RUB"
+        else:
+            message = "Не удалось получить курс доллара. Попробуйте позже."
+
+        # Отправляем сообщение с выпадающим меню
+        await query.edit_message_text(
+            text=message,
+            reply_markup=create_further_actions_keyboard()
+        )
+
+    elif query.data == "calc":
+        logger.info(f"Пользователь {query.from_user.id} ({query.from_user.username}) выбрал 'Конвертировать доллары в рубли'")
+        await query.edit_message_text(text="Введите сумму в долларах для конвертации (например, 100):")
+        context.user_data["awaiting_calc"] = "usd_to_rub"  # Устанавливаем состояние для USD → RUB
+
+    elif query.data == "rub_to_usd":
+        logger.info(f"Пользователь {query.from_user.id} ({query.from_user.username}) выбрал 'Конвертировать рубли в доллары'")
+        await query.edit_message_text(text="Введите сумму в рублях для конвертации (например, 9816):")
+        context.user_data["awaiting_calc"] = "rub_to_usd"  # Устанавливаем состояние для RUB → USD
+
+    elif query.data == "start":
+        logger.info(f"Пользователь {query.from_user.id} ({query.from_user.username}) вернулся в главное меню")
+        # Возвращаем главное меню
+        keyboard = [
+            [InlineKeyboardButton("Получить курс доллара", callback_data="rate")],
+            [InlineKeyboardButton("🔴 Конвертировать доллары в рубли", callback_data="calc")],  # Красный эмодзи
+            [InlineKeyboardButton("🟢 Конвертировать рубли в доллары", callback_data="rub_to_usd")]  # Зеленый эмодзи
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(
+            text="<b>Главное меню</b>\nВыберите действие:",
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+
+# Обработка текстового ввода после выбора действия
+async def calc_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    awaiting_calc = context.user_data.get("awaiting_calc")
+    if awaiting_calc:
+        logger.info(f"Пользователь {update.effective_user.id} ({update.effective_user.username}) ввел сумму для конвертации")
+        try:
+            amount = float(update.message.text)
+            if amount < 0:
+                await update.message.reply_text("Сумма должна быть положительным числом.")
+                return
+
+            usd_rate = await get_usd_to_rub_rate()
+            if usd_rate is None:
+                await update.message.reply_text("Не удалось получить курс доллара. Попробуйте позже.")
+                return
+
+            if awaiting_calc == "usd_to_rub":
+                rub_amount = amount * usd_rate
+                message = f"🔴 {amount} USD = {rub_amount:.2f} RUB"  # Красный эмодзи
+            elif awaiting_calc == "rub_to_usd":
+                usd_amount = amount / usd_rate
+                message = f"🟢 {amount} RUB = {usd_amount:.2f} USD"  # Зеленый эмодзи
+
+            # Отправляем результат с выпадающим меню
+            await update.message.reply_text(
+                text=message,
+                reply_markup=create_further_actions_keyboard()
+            )
+        except ValueError:
+            await update.message.reply_text("Некорректный формат суммы. Введите число.")
+        finally:
+            # Сбрасываем состояние ожидания ввода
+            context.user_data.pop("awaiting_calc", None)
+
+# Основная функция
+def main():
+    try:
+        application = Application.builder().token(token).build()
+    except Exception as e:
+        logger.error(f"Ошибка при создании бота: {e}")
+        return
+
+    # Регистрация обработчиков
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button_handler))  # Обработчик нажатий на кнопки
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, calc_input))  # Обработчик текстового ввода
+
+    try:
+        logger.info("Бот запущен. Нажмите Ctrl+C для остановки.")
+        application.run_polling(close_loop=False)
+    except KeyboardInterrupt:
+        logger.info("Бот остановлен.")
+        asyncio.run(application.shutdown())
+    except Exception as e:
+        logger.error(f"Критическая ошибка: {e}")
+        asyncio.run(application.shutdown())
+
+# Запуск бота
+if __name__ == "__main__":
+    main()
