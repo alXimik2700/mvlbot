@@ -214,25 +214,30 @@ async def close_connector():
 # Переход к следующему блоку6
 # Функция для получения курсов валют
 async def get_exchange_rates(force_update=False, cache_key="world_rates", cache_time=CACHE_TIME_WORLD):
-    global client_session, exchange_rates_world, exchange_rates_regional, last_update_world, last_update_regional
+    """
+    Получает курсы валют из API с возможностью использования закэшированных данных.
+    Поддерживает как фиатные валюты, так и криптовалюты.
+    """
+    global exchange_rates_world, exchange_rates_regional, last_update_world, last_update_regional, client_session
     current_time = time.time()
-    # Определяем, какие курсы использовать (мировые или региональные)
-    if cache_key == "world_rates":
-        rates = exchange_rates_world
-        last_update = last_update_world
-    elif cache_key == "regional_rates":
-        rates = exchange_rates_regional
-        last_update = last_update_regional
-    else:
-        logger.error(f"Неверный ключ кэша: {cache_key}")
-        return None
+
+    # Определяем используемые глобальные переменные в зависимости от ключа кэша
+    rates_dict = {
+        "world_rates": [exchange_rates_world, last_update_world],
+        "regional_rates": [exchange_rates_regional, last_update_regional]
+    }
+    rates, last_update = rates_dict.get(cache_key, (None, None))
+
     # Проверяем, можно ли использовать закэшированные данные
     if not force_update and last_update and (current_time - last_update < cache_time):
         logger.info(f"Используются закэшированные курсы ({cache_key}).")
         return rates
-    # Проверяем состояние ClientSession
-    if client_session is None or client_session.closed:
+
+    # Инициализация ClientSession, если она не создана или закрыта
+    if not client_session or client_session.closed:
         client_session = aiohttp.ClientSession()
+
+    # URL для запроса курсов валют
     url = "https://api.exchangerate-api.com/v4/latest/USD"
     try:
         async with client_session.get(url) as response:
@@ -241,21 +246,21 @@ async def get_exchange_rates(force_update=False, cache_key="world_rates", cache_
                 return None
             data = await response.json()
             new_rates = data.get("rates", {})
-            # Обновляем кэш и время последнего обновления
+
+            # Обновляем глобальные переменные в зависимости от ключа кэша
             if cache_key == "world_rates":
                 exchange_rates_world = new_rates
                 last_update_world = current_time
             elif cache_key == "regional_rates":
                 exchange_rates_regional = new_rates
                 last_update_regional = current_time
+
             logger.info(f"Курсы валют обновлены ({cache_key}).")
             return new_rates
-    except aiohttp.ClientConnectionError as e:
-        logger.error(f"Проблемы с подключением к API ({url}): {e}")
-        return None
     except Exception as e:
         logger.error(f"Ошибка при запросе к API ({url}): {e}")
         return None
+
 
 # Функция для получения курсов криптовалют через CoinGecko
 async def get_crypto_exchange_rates_coingecko(force_update=False):
@@ -400,19 +405,30 @@ def create_back_keyboard():
 
 # Создание клавиатуры с доступными валютами для конвертации
 def create_currency_selection_keyboard(currencies, step):
+    """
+    Создает клавиатуру с доступными валютами для выбора при конвертации.
+
+    :param currencies: Список доступных валют (включая криптовалюты).
+    :param step: Текущий шаг выбора ('from' - исходная валюта, 'to' - целевая валюта, 'from_crypto' - исходная криптовалюта, 'to_crypto' - целевая криптовалюта).
+    :return: InlineKeyboardMarkup объект.
+    """
     keyboard = []
     for currency in currencies:
-        flag = get_currency_flag(currency)  # Получаем флаг для валюты
+        flag = get_currency_flag(currency)  # Получаем флаг или символ для валюты
         keyboard.append([InlineKeyboardButton(f"{currency} {flag}", callback_data=f"{step}_{currency}")])
-    keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="back")])  # Добавляем кнопку "Назад"
+
+    # Добавляем кнопку "Назад"
+    keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="back")])
     return InlineKeyboardMarkup(keyboard)
 
 
-# Функция для получения флага валюты
+# Вспомогательная функция для получения флага или символа валюты
 def get_currency_flag(currency):
     """
-    Возвращает флаг для указанной валюты.
-    Если флаг для валюты не найден, возвращает пустую строку.
+    Возвращает флаг или символ для указанной валюты.
+
+    :param currency: Код валюты
+    :return: Строка с флагом или символом валюты
     """
     flags = {
         "EUR": "🇪🇺",  # Евро
@@ -445,8 +461,10 @@ def get_currency_flag(currency):
         "ARS": "🇦🇷",  # Аргентинское песо
         "MXN": "🇲🇽",  # Мексиканское песо
         "CLP": "🇨🇱",  # Чилийское peso
-        "BTC": "₿",   # Bitcoin
-        "ETH": "Ξ",   # Ethereum
+
+        # Криптовалюты
+        "BTC": "₿",  # Bitcoin
+        "ETH": "Ξ",  # Ethereum
         "BNB": "💎",  # Binance Coin
         "XRP": "✨",  # Ripple
         "ADA": "♠️",  # Cardano
@@ -557,7 +575,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             rates = await get_exchange_rates(cache_key="world_rates", cache_time=CACHE_TIME_WORLD)
             if rates:
                 message = "Выберите исходную валюту:"
-                available_currencies = list(ALL_CURRENCIES.keys())
+                available_currencies = list(ALL_CURRENCIES.keys()) + ["BTC", "ETH", "BNB", "XRP", "ADA"]
                 await safe_edit_message(query, message, create_currency_selection_keyboard(available_currencies, step="from"))
                 context.user_data["step"] = "select_from_currency"
             else:
@@ -584,7 +602,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"Пользователь {query.from_user.id} ({query.from_user.username}) выбрал исходную валюту: {from_currency}")
 
             message = f"Вы выбрали исходную валюту: {from_currency}\n\nВыберите целевую валюту:"
-            available_currencies = [c for c in ALL_CURRENCIES.keys() if c != from_currency]  # Исключаем ту же валюту
+            available_currencies = [c for c in list(ALL_CURRENCIES.keys()) + ["BTC", "ETH", "BNB", "XRP", "ADA"] if c != from_currency]
             await safe_edit_message(query, message, create_currency_selection_keyboard(available_currencies, step="to"))
             context.user_data["step"] = "select_to_currency"
 
@@ -636,19 +654,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             current_step = context.user_data.get("step")
             if current_step == "select_to_currency":
                 message = "Выберите исходную валюту:"
-                available_currencies = list(ALL_CURRENCIES.keys())
+                available_currencies = list(ALL_CURRENCIES.keys()) + ["BTC", "ETH", "BNB", "XRP", "ADA"]
                 await safe_edit_message(query, message, create_currency_selection_keyboard(available_currencies, step="from"))
                 context.user_data["step"] = "select_from_currency"
             elif current_step == "enter_amount":
                 from_currency = context.user_data.get("from_currency")
                 if from_currency:
                     message = f"Вы выбрали исходную валюту: {from_currency}\n\nВыберите целевую валюту:"
-                    available_currencies = [c for c in ALL_CURRENCIES.keys() if c != from_currency]
+                    available_currencies = [c for c in list(ALL_CURRENCIES.keys()) + ["BTC", "ETH", "BNB", "XRP", "ADA"] if c != from_currency]
                     await safe_edit_message(query, message, create_currency_selection_keyboard(available_currencies, step="to"))
                     context.user_data["step"] = "select_to_currency"
                 else:
                     message = "Выберите исходную валюту:"
-                    available_currencies = list(ALL_CURRENCIES.keys())
+                    available_currencies = list(ALL_CURRENCIES.keys()) + ["BTC", "ETH", "BNB", "XRP", "ADA"]
                     await safe_edit_message(query, message, create_currency_selection_keyboard(available_currencies, step="from"))
                     context.user_data["step"] = "select_from_currency"
             elif current_step == "select_to_currency_crypto":
@@ -676,6 +694,106 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка при обработке кнопки: {e}")
         message = "Произошла ошибка. Пожалуйста, попробуйте еще раз."
         await safe_edit_message(query, message, create_main_menu_keyboard())
+
+
+# Обработка текстового ввода для конвертации
+async def convert_currency(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        current_step = context.user_data.get("step")
+        if current_step not in ["enter_amount", "enter_amount_crypto"]:
+            message = "Ошибка: Неверный шаг. Пожалуйста, начните заново."
+            await update.message.reply_text(
+                text=message,
+                parse_mode="HTML",
+                reply_markup=create_main_menu_keyboard(),
+            )
+            return
+
+        logger.info(f"Пользователь {update.effective_user.id} ({update.effective_user.username}) ввел сумму для конвертации")
+
+        # Парсим введенную сумму
+        try:
+            amount = float(update.message.text.strip())
+            if amount <= 0:
+                message = "Сумма должна быть больше нуля."
+                await update.message.reply_text(message, reply_markup=create_back_keyboard())
+                return
+        except ValueError:
+            message = "Некорректный ввод. Введите число."
+            await update.message.reply_text(message, reply_markup=create_back_keyboard())
+            return
+
+        from_currency = context.user_data.get("from_currency")
+        to_currency = context.user_data.get("to_currency")
+
+        if not from_currency or not to_currency:
+            message = "Ошибка: Не выбрана исходная или целевая валюта."
+            await update.message.reply_text(message, reply_markup=create_main_menu_keyboard())
+            return
+
+        # Получаем актуальные курсы
+        rates = {}
+        if from_currency in ALL_CURRENCIES or to_currency in ALL_CURRENCIES:
+            rates.update(await get_exchange_rates(force_update=True, cache_key="world_rates", cache_time=CACHE_TIME_WORLD))
+        if from_currency in ["BTC", "ETH", "BNB", "XRP", "ADA"] or to_currency in ["BTC", "ETH", "BNB", "XRP", "ADA"]:
+            rates.update(await get_crypto_exchange_rates_with_fallback(force_update=True))
+
+        if not rates:
+            message = "Не удалось получить курсы валют. Попробуйте позже."
+            await update.message.reply_text(message, reply_markup=create_main_menu_keyboard())
+            return
+
+        # Выполняем конвертацию
+        rate_from = rates.get(from_currency)
+        rate_to = rates.get(to_currency)
+
+        # Логика для конвертации из фиата в крипту
+        if from_currency in ALL_CURRENCIES and to_currency in ["BTC", "ETH", "BNB", "XRP", "ADA"]:
+            # Конвертируем из фиата в USD
+            usd_rate = rates.get("USD", 1)  # Если исходная валюта USD, курс = 1
+            if from_currency != "USD":
+                rate_from = rates.get(from_currency, None)
+                if rate_from is None:
+                    message = f"Не найден курс для {from_currency}."
+                    await update.message.reply_text(message, reply_markup=create_main_menu_keyboard())
+                    return
+                usd_amount = amount / rate_from  # Переводим в USD
+            else:
+                usd_amount = amount  # Если исходная валюта USD
+
+            # Конвертируем из USD в крипту
+            crypto_rate = rates.get(to_currency, None)
+            if crypto_rate is None:
+                message = f"Не найден курс для {to_currency}."
+                await update.message.reply_text(message, reply_markup=create_main_menu_keyboard())
+                return
+            result = usd_amount / crypto_rate  # Переводим в крипту
+
+        # Логика для других типов конвертации
+        else:
+            if from_currency in ["BTC", "ETH", "BNB", "XRP", "ADA"]:
+                rate_from = 1 / rate_from if rate_from else None
+            if to_currency in ["BTC", "ETH", "BNB", "XRP", "ADA"]:
+                rate_to = 1 / rate_to if rate_to else None
+
+            if rate_from is None or rate_to is None:
+                message = "Не удалось выполнить конвертацию. Убедитесь, что выбраны корректные валюты."
+                await update.message.reply_text(message, reply_markup=create_main_menu_keyboard())
+                return
+
+            result = (amount * rate_from) / rate_to if rate_to else None
+
+        if result is not None:
+            message = f"{amount:.2f} {from_currency} = {result:.8f} {to_currency}"
+        else:
+            message = "Не удалось выполнить конвертацию."
+
+        await update.message.reply_text(message, reply_markup=create_main_menu_keyboard())
+
+    except Exception as e:
+        logger.error(f"Ошибка при конвертации валют: {e}")
+        message = "Произошла ошибка. Пожалуйста, попробуйте еще раз."
+        await update.message.reply_text(message, reply_markup=create_main_menu_keyboard())
 
 
 # Переход к следующему блоку10
