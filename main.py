@@ -1115,7 +1115,23 @@ def main():
                 loop.run_until_complete(application.shutdown())
             loop.close()
 
-if __name__ == "__main__":
+
+import asyncio
+
+if __name__ == '__main__':
+    # Предварительная загрузка курсов валют
+    asyncio.run(preload_exchange_rates())
+
+    # Инициализация Telegram-бота
+    application = Application.builder().token(token).build()
+
+    # Добавление обработчиков
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, convert_currency))
+
+    # Запуск бота
+    application.run_polling()
     try:
         main()
     except KeyboardInterrupt:
