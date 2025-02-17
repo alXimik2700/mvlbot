@@ -6,6 +6,7 @@ import os
 import logging
 import time
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -15,7 +16,6 @@ from telegram.ext import (
     filters,
 )
 import aiohttp
-
 
 
 # Переход к следующему блоку2
@@ -1118,21 +1118,25 @@ def main():
 
 import asyncio
 
-if __name__ == '__main__':
-    # Предварительная загрузка курсов валют
-    asyncio.run(preload_exchange_rates())
-
-    # Инициализация Telegram-бота
-    application = Application.builder().token(token).build()
-
-    # Добавление обработчиков
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, convert_currency))
-
-    # Запуск бота
-    application.run_polling()
+if __name__ == "__main__":
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        main()
-    except KeyboardInterrupt:
-        asyncio.run(shutdown())
+        # Предварительная загрузка курсов валют
+        loop.run_until_complete(preload_exchange_rates())
+
+        # Создаем объект application
+        application = ApplicationBuilder().token(token).build()
+
+        # Добавляем обработчики команд
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CallbackQueryHandler(button_handler))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, convert_currency))
+
+        # Запускаем бота
+        loop.run_until_complete(application.run_polling())
+    finally:
+        # Закрываем ClientSession при завершении работы
+        if not loop.is_closed():
+            loop.run_until_complete(close_connector())
+        loop.close()
